@@ -1,0 +1,9 @@
+/local/
+/.hydration-venv/
+__pycache__/
+*.py[cod]
+/opensubtitles-historical-v2/
+/usenet-companions/
+/opensubtitles-historical-v2.zip
+/usenet-dehydrated-v3.zip
+/usenet-companions-1.3.zip

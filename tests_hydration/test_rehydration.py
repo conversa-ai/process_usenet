@@ -5,10 +5,11 @@ from email.message import EmailMessage
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import hydration_common as common
 import rehydrate_usenet as usenet
 import refresh_usenet_sources as refresh
+
 class Response(io.BytesIO):
 
     def __init__(self, raw=b'', headers=None, status=200):
@@ -169,6 +170,20 @@ class UsenetTests(unittest.TestCase):
         self.assertGreater(rows[1][1], rows[0][1])
         self.assertIn(b'Synthetic two', rows[1][2])
 
+    def test_mbox_message_bytes_match_historical_mailbox_separator_semantics(self):
+        import mailbox
+        raw = b'From synthetic 1\nMessage-ID: <a>\n\nSynthetic first.\n\nFrom synthetic 2\nMessage-ID: <b>\n\nSynthetic second.\r\n\r\nFrom synthetic 3\nMessage-ID: <c>\n\nSynthetic final.\n\n'
+        streamed = list(usenet.mbox_messages(io.BytesIO(raw)))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'synthetic.mbox'
+            path.write_bytes(raw)
+            old = mailbox.mbox(path, create=False)
+            try:
+                for ordinal, _, message in streamed:
+                    self.assertEqual(message, old.get_bytes(ordinal, from_=False))
+            finally:
+                old.close()
+
     def test_oversized_message_is_not_silently_truncated(self):
         rows = list(usenet.mbox_messages(io.BytesIO(b'From synthetic\n\n' + b'x' * 100 + b'\n'), 10))
         self.assertIsNone(rows[0][2])
@@ -291,5 +306,5 @@ class UsenetTests(unittest.TestCase):
         result = refresh.resolve(d, {'synthetic-item': {'files': [{'name': 'synthetic.mbox.zip', 'size': '13'}]}})
         self.assertTrue(result['containers'][0]['sources'][0]['recorded_snapshot_changed'])
         self.assertEqual(d['containers'][0]['sources'][0]['size'], 12)
-
-if __name__=="__main__":unittest.main()
+if __name__ == '__main__':
+    unittest.main()

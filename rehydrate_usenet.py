@@ -139,21 +139,31 @@ def mbox_messages(stream, maximum_message_bytes=16*MIB):
     Oversized messages retain a position and explicit outcome, never truncate.
     """
     current = bytearray(); offset = 0; start = 0; number = 0; oversized = False; begun = False
+    last_line_empty = False
     for line in stream:
         if line.startswith(b'From '):
             if begun:
+                # CPython mailbox.mbox._generate_toc excludes one separator LF
+                # exactly when its final physical line was b'\n'. This affects
+                # CLD2 vector lengths; preserving an extra blank line changes
+                # the historical Unicode slicing output for some messages.
+                if last_line_empty and not oversized:
+                    del current[-1:]
                 yield number, start, None if oversized else bytes(current)
                 number += 1
-            begun = True; start = offset; current = bytearray(); oversized = False
+            begun = True; start = offset; current = bytearray(); oversized = False; last_line_empty = False
         elif not begun and line.strip():
             raise Outcome('error', 'mbox_missing_initial_unix_from_line')
         elif begun:
+            last_line_empty = line == b'\n'
             if not oversized:
                 current.extend(line)
                 if len(current) > maximum_message_bytes:
                     current.clear(); oversized = True
         offset += len(line)
     if begun:
+        if last_line_empty and not oversized:
+            del current[-1:]
         yield number, start, None if oversized else bytes(current)
 
 
@@ -233,7 +243,8 @@ def build_index(path, sources, wanted, max_message_bytes, max_source_bytes, proc
     receipt_path = path.with_suffix('.json')
     configuration = {'sources': fingerprints, 'wanted_sha256': target_hash,
                      'recipe': 'usenet-inspected-historical/1', 'max_message_bytes': max_message_bytes,
-                     'max_source_bytes': max_source_bytes}
+                     'max_source_bytes': max_source_bytes,
+                     'mbox_reader': 'cpython-mbox-separator-lf/1'}
     if receipt_path.exists() and path.exists():
         previous = load(receipt_path)
         if previous['configuration'] != configuration:
