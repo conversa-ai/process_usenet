@@ -221,6 +221,20 @@ class UsenetTests(unittest.TestCase):
         rows = list(usenet.mbox_messages(io.BytesIO(b'From synthetic\n\n' + b'x' * 100 + b'\n'), 10))
         self.assertIsNone(rows[0][2])
 
+    def test_long_physical_line_and_expansion_bound_are_streamed(self):
+
+        class BoundedReader(io.BytesIO):
+
+            def readline(self, size=-1):
+                if not 0 < size <= 65536:
+                    raise AssertionError('unbounded physical line read')
+                return super().readline(size)
+        raw = b'From synthetic\nMessage-ID: <a>\n\n' + b'x' * 200000 + b'\n'
+        result = list(usenet.mbox_messages(BoundedReader(raw), 512, len(raw)))
+        self.assertIsNone(result[0][2])
+        with self.assertRaisesRegex(common.Outcome, 'uncompressed_mbox_byte_bound'):
+            list(usenet.mbox_messages(BoundedReader(raw), 512, 1024))
+
     def test_missing_turn_never_becomes_partial_dialogue(self):
         a = usenet.historical_message_code('<a>')
         b = usenet.historical_message_code('<b>')

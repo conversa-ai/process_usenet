@@ -132,16 +132,24 @@ def historical_row(message, detector=None, encoding_detector=None, date_parser=N
     return [code, f'{date.year}/{date.month}/{date.day}', subject, body]
 
 
-def mbox_messages(stream, maximum_message_bytes=16*MIB):
+def mbox_messages(stream, maximum_message_bytes=16*MIB, maximum_source_bytes=None):
     """One message at a time, using the mailbox module's From-line boundaries.
 
     Escaped >From body lines stay escaped, matching mailbox.mbox retrieval.
     Oversized messages retain a position and explicit outcome, never truncate.
     """
     current = bytearray(); offset = 0; start = 0; number = 0; oversized = False; begun = False
-    last_line_empty = False
-    for line in stream:
-        if line.startswith(b'From '):
+    last_line_empty = False; at_line_start = True; envelope_continues = False
+    while True:
+        capacity = 65536 if maximum_source_bytes is None else min(65536, maximum_source_bytes-offset+1)
+        if capacity <= 0:
+            raise Outcome('error', 'uncompressed_mbox_byte_bound')
+        line = stream.readline(capacity)
+        if not line:
+            break
+        if maximum_source_bytes is not None and offset+len(line) > maximum_source_bytes:
+            raise Outcome('error', 'uncompressed_mbox_byte_bound')
+        if at_line_start and line.startswith(b'From '):
             if begun:
                 # CPython mailbox.mbox._generate_toc excludes one separator LF
                 # exactly when its final physical line was b'\n'. This affects
@@ -152,15 +160,19 @@ def mbox_messages(stream, maximum_message_bytes=16*MIB):
                 yield number, start, None if oversized else bytes(current)
                 number += 1
             begun = True; start = offset; current = bytearray(); oversized = False; last_line_empty = False
+            envelope_continues = not line.endswith(b'\n')
+        elif envelope_continues:
+            envelope_continues = not line.endswith(b'\n')
         elif not begun and line.strip():
             raise Outcome('error', 'mbox_missing_initial_unix_from_line')
         elif begun:
-            last_line_empty = line == b'\n'
+            last_line_empty = at_line_start and line == b'\n'
             if not oversized:
                 current.extend(line)
                 if len(current) > maximum_message_bytes:
                     current.clear(); oversized = True
         offset += len(line)
+        at_line_start = line.endswith(b'\n')
     if begun:
         if last_line_empty and not oversized:
             del current[-1:]
@@ -244,7 +256,7 @@ def build_index(path, sources, wanted, max_message_bytes, max_source_bytes, proc
     configuration = {'sources': fingerprints, 'wanted_sha256': target_hash,
                      'recipe': 'usenet-inspected-historical/1', 'max_message_bytes': max_message_bytes,
                      'max_source_bytes': max_source_bytes,
-                     'mbox_reader': 'cpython-mbox-separator-lf/1'}
+                     'mbox_reader': 'cpython-mbox-separator-lf-bounded/2'}
     if receipt_path.exists() and path.exists():
         previous = load(receipt_path)
         if previous['configuration'] != configuration:
@@ -264,7 +276,7 @@ def build_index(path, sources, wanted, max_message_bytes, max_source_bytes, proc
         counts = collections.Counter(dict(database.execute('SELECT name,value FROM counters WHERE source=?', (source_index,))))
         consumed = 0
         with source_stream(source['path'], source.get('member')) as stream:
-            for ordinal, offset, raw in mbox_messages(stream, max_message_bytes):
+            for ordinal, offset, raw in mbox_messages(stream, max_message_bytes, max_source_bytes):
                 if offset > max_source_bytes:
                     database.close(); raise Outcome('error', 'uncompressed_mbox_byte_bound')
                 if ordinal < next_ordinal:
