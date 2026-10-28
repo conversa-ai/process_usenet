@@ -331,10 +331,20 @@ class Network:
         try:
             with self.open(url, request_headers, payload, api) as response:
                 capacity = min(limit, self.max_bytes - self.state['bytes'])
-                raw = response.read(capacity + 1)
+                declared = response.headers.get('Content-Length')
+                declared = int(declared) if declared is not None else None
+                if declared is not None and not 0 <= declared <= capacity:
+                    raise Outcome('error', 'api_response_declared_byte_bound')
+                try:
+                    raw = response.read(capacity)
+                except http.client.IncompleteRead as interrupted:
+                    self.consume(len(interrupted.partial))
+                    raise Outcome('error', 'interrupted_api_response') from None
                 self.consume(len(raw))
-                if len(raw) > capacity:
-                    raise Outcome('error', 'api_response_byte_bound')
+                if declared is None and len(raw) == capacity:
+                    raise Outcome('error', 'api_response_bound_eof_unproven')
+                if declared is not None and len(raw) != declared:
+                    raise Outcome('error', 'interrupted_api_response')
             return parse(raw.decode('utf-8', errors='strict'))
         except (UnicodeError, ValueError, KeyError, http.client.HTTPException, OSError):
             raise Outcome('error', 'invalid_or_interrupted_api_response') from None
@@ -359,6 +369,15 @@ class Network:
         if partial.exists() and (not partial_meta.exists() or load(partial_meta)['identity'] != identity):
             raise Outcome('error', 'partial_download_identity_mismatch')
         atomic_json(partial_meta, {'identity': identity, 'expected': expected})
+        # Recover a crash after the complete receipt was committed but before
+        # the final rename, without spending another request/download quota.
+        if partial.exists() and receipt_path.exists():
+            receipt = load(receipt_path)
+            if receipt.get('identity') == identity and receipt.get('sha256') == sha_file(partial):
+                self.check_download(partial, expected, max_file_bytes)
+                os.replace(partial, destination)
+                partial_meta.unlink(missing_ok=True)
+                return receipt
         for attempt in range(self.retries + 1):
             offset = partial.stat().st_size if partial.exists() else 0
             headers = {'Range': 'bytes=' + str(offset) + '-'} if offset else {}

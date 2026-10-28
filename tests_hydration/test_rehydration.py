@@ -134,6 +134,39 @@ class TransportTests(unittest.TestCase):
                 n.download('https://dl.opensubtitles.com/synthetic', Path(tmp) / 'source', {}, 100, {'size': 101})
             self.assertEqual(op.requests, [])
 
+    def test_api_response_bounds_and_interrupted_bytes_are_accounted(self):
+
+        class BrokenAPI(Response):
+
+            def read(self, n=-1):
+                raise http.client.IncompleteRead(b'abc', 7)
+        with tempfile.TemporaryDirectory() as tmp:
+            op = Opener(BrokenAPI(b'', {'Content-Length': '10'}))
+            n = self.net(tmp, op)
+            with self.assertRaisesRegex(common.Outcome, 'interrupted_api_response'):
+                n.json('https://api.opensubtitles.com/api/v1/subtitles', api=True)
+            self.assertEqual(n.state['bytes'], 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self.net(tmp, Opener(Response(b'abcdefghij')), max_bytes=3)
+            with self.assertRaisesRegex(common.Outcome, 'declared_byte_bound'):
+                n.json('https://api.opensubtitles.com/api/v1/subtitles', api=True)
+            self.assertEqual(n.state['bytes'], 0)
+
+    def test_crash_after_receipt_before_rename_needs_no_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            p = root / 'source'
+            part = root / 'source.part'
+            part.write_bytes(b'synthetic')
+            identity = {'modern_file_id': 777}
+            common.atomic_json(root / 'source.part.json', {'identity': identity, 'expected': {}})
+            common.atomic_json(root / 'source.receipt.json', {'identity': identity, 'sha256': common.sha_file(part), 'size': part.stat().st_size})
+            op = Opener()
+            n = self.net(tmp, op)
+            n.download('https://dl.opensubtitles.com/synthetic', p, identity, 100)
+            self.assertEqual(p.read_bytes(), b'synthetic')
+            self.assertEqual(op.requests, [])
+
     def test_child_symlink_cannot_redirect_hydration_to_upload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
