@@ -1,0 +1,6 @@
+# OpenSubtitles retrieval, recipe and both offline verifiers: Python standard library.
+# Usenet historical MIME/encoding/language/date pipeline only:
+chardet==5.2.0
+pycld2==0.41
+python-dateutil==2.9.0.post0
+six==1.17.0
